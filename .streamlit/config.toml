@@ -1,0 +1,10 @@
+# Streamlit server & UI defaults for this project.
+# Raises browser upload limit (default is 200 MB, which Streamlit shows on the file widget).
+
+[server]
+# Megabytes per uploaded file (total for multi-file uploads in one batch is per-file).
+maxUploadSize = 4096
+
+[theme]
+# Optional: align chrome with app teal accent (Streamlit still respects user theme override in UI).
+primaryColor = "#0f766e"

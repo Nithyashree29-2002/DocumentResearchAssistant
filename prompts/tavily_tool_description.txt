@@ -1,0 +1,1 @@
+Search the public web. Use **only** after the document search tool has been tried and returned nothing relevant, or the user explicitly wants outside or current web sources. **Do not** use this tool first for definitional or factual questions (e.g. “What is …?”) that might be answered from the user’s uploaded PDFs—those must start with document search.

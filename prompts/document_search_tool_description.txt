@@ -1,0 +1,1 @@
+Search the user’s indexed PDFs. **Prefer this first** for definitions (“What is …?”), explanations, and any topic that might appear in the user’s uploads. Tool output may include `[Document: … | Page: …]` on each passage for your eyes only. In your **reply**, keep the body citation-free; put **one** document line under `### Sources` after `---` (see system prompt).
