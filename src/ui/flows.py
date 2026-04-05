@@ -14,6 +14,7 @@ from core.agent import (
     parse_agent_sources,
     session_messages_to_lc,
     stringify_agent_output,
+    strip_ungrounded_sources_section,
 )
 from core.config import Settings
 from core.ingestion import load_and_chunk_pdfs
@@ -26,6 +27,68 @@ from ui.layout import (
     render_step_banner,
     scroll_chat_into_view,
 )
+
+# Gemini sometimes returns final text with no tool calls; one retry nudges tool use.
+_TOOL_RETRY_SUFFIX = (
+    "\n\n[Instruction for this turn: Call the document-search tool once with a focused query, "
+    "then the web-search tool if the PDFs do not answer. Base your reply on tool output; "
+    "do not answer from memory alone.]"
+)
+
+_WEB_COMPLETION_SUFFIX = (
+    "\n\n[The indexed files did not answer this question. Call the web-search tool now, "
+    "then write the complete answer from those results. Do not ask whether to search.]"
+)
+
+
+def _needs_web_completion_retry(text: str, sources: dict | None) -> bool:
+    """Model asked permission to search or stopped short without calling web."""
+    if not text or not sources:
+        return False
+    if sources.get("label") == "Web search":
+        return False
+    if (sources.get("web_excerpt") or "").strip():
+        return False
+    low = text.lower()
+    return any(
+        p in low
+        for p in (
+            "would you like",
+            "would you want",
+            "shall i search",
+            "should i search",
+            "want me to search",
+            "want me to look",
+            "search the internet",
+            "search the web",
+            "look online",
+            "look it up online",
+        )
+    )
+
+
+def _should_retry_invoke_without_tools(user_text: str) -> bool:
+    t = user_text.strip().lower()
+    if len(t) < 10:
+        return False
+    if any(
+        t.startswith(s)
+        for s in (
+            "hi,",
+            "hi ",
+            "hello",
+            "hey",
+            "thanks",
+            "thank you",
+            "bye",
+            "good morning",
+            "good night",
+            "ok",
+            "okay",
+        )
+    ) and len(t) < 55:
+        return False
+    return True
 
 
 def _retriever_cache_key(
@@ -274,9 +337,34 @@ def render_chat_flow(settings: Settings) -> None:
                         {"input": user_text, "chat_history": history},
                         config={"callbacks": [cb]},
                     )
+                    if not (res.get("intermediate_steps") or []) and _should_retry_invoke_without_tools(
+                        user_text
+                    ):
+                        status.update(label="Retrying with tool reminder…", state="running")
+                        res = agent.invoke(
+                            {
+                                "input": user_text + _TOOL_RETRY_SUFFIX,
+                                "chat_history": history,
+                            },
+                            config={"callbacks": [cb]},
+                        )
+                    text = stringify_agent_output(res.get("output", ""))
+                    sources = parse_agent_sources(res.get("intermediate_steps"))
+                    if _needs_web_completion_retry(text, sources):
+                        status.update(label="Fetching web results…", state="running")
+                        res = agent.invoke(
+                            {
+                                "input": user_text + _WEB_COMPLETION_SUFFIX,
+                                "chat_history": history,
+                            },
+                            config={"callbacks": [cb]},
+                        )
+                        text = stringify_agent_output(res.get("output", ""))
+                        sources = parse_agent_sources(res.get("intermediate_steps"))
                     status.update(label="Done", state="complete")
-                text = stringify_agent_output(res.get("output", ""))
-                sources = parse_agent_sources(res.get("intermediate_steps"))
+                lbl = (sources or {}).get("label", "")
+                if lbl in ("No tools used", "No retrieval"):
+                    text = strip_ungrounded_sources_section(text)
                 render_assistant_answer_block(text, sources)
             except Exception as e:
                 err = f"{e!s}"

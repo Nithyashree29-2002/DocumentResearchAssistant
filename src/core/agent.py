@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
@@ -25,9 +26,26 @@ DOCUMENT_SEARCH_EMPTY_MESSAGE = (
 )
 WEB_SEARCH_EXCERPT_SEPARATOR = "\n\n---\n\n"
 _GEMINI_CHAT_TEMPERATURE = 0.2
-_GEMINI_CHAT_STREAMING = True
+# Streaming can weaken tool adherence with some Gemini + LangChain stacks; keep off for reliable RAG + Tavily.
+_GEMINI_CHAT_STREAMING = False
 _TAVILY_MAX_RESULTS = 4
 _TAVILY_SEARCH_DEPTH = "advanced"
+
+
+def strip_ungrounded_sources_section(text: str) -> str:
+    """
+    Remove a trailing ``Sources`` / ``### Sources`` block. Used when no tools ran
+    but the model still invented [Web] lines or URLs.
+    """
+    if not (text and text.strip()):
+        return text
+    return re.sub(
+        r"(?:\r?\n|^)(?:---\s*\r?\n)?(?:#{1,6}\s*)?Sources\s*\r?\n[\s\S]*\Z",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    ).rstrip()
 
 
 def stringify_agent_output(output: Any) -> str:
@@ -115,11 +133,13 @@ def parse_agent_sources(intermediate_steps: list | None) -> dict[str, Any]:
     Derive UI metadata from AgentExecutor intermediate steps.
 
     Returns keys: label (str), document_chunks (list[str]), web_excerpt (str).
-    Label is always a single category: documents take precedence over web when
-    both were used in the same turn (expanders still show passages and web snippets).
+    Single pill: if both document and web tools ran, **last tool in the trace wins**
+    (doc-then-web answers match the web pill and omit noisy retrieved passages).
     """
     used_docs = False
     used_web = False
+    last_doc_step: int | None = None
+    last_web_step: int | None = None
     document_chunks: list[str] = []
     web_parts: list[str] = []
     doc_tool = TOOL_NAME_DOCUMENT_SEARCH
@@ -136,10 +156,11 @@ def parse_agent_sources(intermediate_steps: list | None) -> dict[str, Any]:
 
     wsep = WEB_SEARCH_EXCERPT_SEPARATOR
 
-    for action, observation in intermediate_steps:
+    for step_i, (action, observation) in enumerate(intermediate_steps):
         name = _tool_name(action)
 
         if name == doc_tool:
+            last_doc_step = step_i
             obs = (
                 observation
                 if isinstance(observation, str)
@@ -155,12 +176,20 @@ def parse_agent_sources(intermediate_steps: list | None) -> dict[str, Any]:
                         document_chunks.append(p)
                         used_docs = True
         elif name == web_tool:
+            last_web_step = step_i
             used_web = True
             excerpt = _web_tool_observation_to_text(observation, wsep)
             if excerpt:
                 web_parts.append(excerpt)
 
-    if used_docs:
+    if used_docs and used_web:
+        label = (
+            "Web search"
+            if last_web_step is not None
+            and (last_doc_step is None or last_web_step > last_doc_step)
+            else "Your documents"
+        )
+    elif used_docs:
         label = "Your documents"
     elif used_web:
         label = "Web search"
